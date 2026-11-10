@@ -6,11 +6,16 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from sqlalchemy import select
+from datetime import timezone
+from decimal import Decimal
 
 from bot.config import load_settings
-from bot.db import init_database
+from bot.db import get_session, init_database, session_factory
 from bot.menu import admin_menu, form_menu, partner_menu, regulation_menu
+from bot.models import Partner, Request as DbRequest, RequestStatus, User
+from bot.sheets import append_request
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 router = Router()
@@ -159,7 +164,73 @@ async def request_confirm(message: Message, state: FSMContext) -> None:
         await state.clear(); await message.answer("Заявка отменена.", reply_markup=partner_menu()); return
     if message.text != "Подтвердить":
         await message.answer("Напишите «Подтвердить» или нажмите «Отмена».", reply_markup=form_menu()); return
-    await state.clear(); await message.answer("✅ Заявка принята в черновик. После подключения синхронизации администратор получит уведомление.", reply_markup=partner_menu())
+    data = await state.get_data()
+    async with session_factory() as session:
+        user = (await session.execute(select(User).where(User.tg_id == message.from_user.id))).scalar_one_or_none()
+        if user is None:
+            user = User(tg_id=message.from_user.id, role="partner_manager", fio=message.from_user.full_name)
+            session.add(user); await session.flush()
+        partner = (await session.execute(select(Partner).where(Partner.owner_user_id == user.id))).scalar_one_or_none()
+        if partner is None:
+            partner = Partner(name=f"Партнёр {message.from_user.id}", owner_user_id=user.id, marketplaces="[]")
+            session.add(partner); await session.flush()
+        total = Decimal(data["units"] * data["weight"]) / Decimal(1000)
+        request = DbRequest(
+            number="TEMP", partner_id=partner.id, created_by_user_id=user.id,
+            product_name=data["product"], weight_category_g=data["weight"], units_count=data["units"],
+            total_kg=total, marketplace=data["marketplace"], status=RequestStatus.DRAFT,
+            comment=data.get("comment"),
+        )
+        session.add(request); await session.flush(); request.number = f"З-{request.id:04d}"; await session.commit()
+        row = [request.number, datetime.now().isoformat(timespec="minutes"), partner.name, partner.id, message.from_user.full_name,
+               data["marketplace"], data["product"], "", data["weight"], data["units"], float(total), "", "", "", "", "", "", "", "На согласовании", "Нет", "Нет", "Нет", "Нет", "", data.get("comment") or "", datetime.now().isoformat(timespec="minutes"), "", "", "", "", "Новая заявка", message.from_user.full_name]
+        await append_request(row)
+        admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Принять в очередь", callback_data=f"approve:{request.id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject:{request.id}"),
+        ]])
+        for admin_id in settings.admin_ids:
+            try:
+                await message.bot.send_message(admin_id, f"📋 Новая заявка {request.number}\nТовар: {request.product_name}\nФасовка: {request.weight_category_g} г\nКоличество: {request.units_count} шт.\nПлан: {request.total_kg} кг\nМаркетплейс: {request.marketplace}", reply_markup=admin_keyboard)
+            except Exception:
+                logging.exception("Не удалось уведомить администратора")
+    await state.clear(); await message.answer(f"✅ Заявка {request.number} отправлена администратору на подтверждение.", reply_markup=partner_menu())
+
+
+@router.callback_query(F.data.startswith("approve:"))
+async def approve_request(callback: CallbackQuery) -> None:
+    if not callback.from_user or callback.from_user.id not in settings.admin_ids:
+        await callback.answer("Недостаточно прав", show_alert=True); return
+    request_id = int(callback.data.split(":", 1)[1])
+    async with session_factory() as session:
+        request = await session.get(DbRequest, request_id)
+        if request is None:
+            await callback.answer("Заявка не найдена", show_alert=True); return
+        request.status = RequestStatus.IN_QUEUE; request.accepted_at = datetime.now(timezone.utc); await session.commit()
+        user = await session.get(User, request.created_by_user_id)
+    if user:
+        try:
+            await callback.bot.send_message(user.tg_id, f"✅ Заявка {request.number} принята в очередь.")
+        except Exception:
+            logging.exception("Не удалось уведомить партнёра")
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.answer("Заявка принята в очередь")
+
+
+@router.callback_query(F.data.startswith("reject:"))
+async def reject_request(callback: CallbackQuery) -> None:
+    if not callback.from_user or callback.from_user.id not in settings.admin_ids:
+        await callback.answer("Недостаточно прав", show_alert=True); return
+    request_id = int(callback.data.split(":", 1)[1])
+    async with session_factory() as session:
+        request = await session.get(DbRequest, request_id)
+        if request is None:
+            await callback.answer("Заявка не найдена", show_alert=True); return
+        request.status = RequestStatus.NEEDS_ACTION; await session.commit()
+        user = await session.get(User, request.created_by_user_id)
+    if user:
+        await callback.bot.send_message(user.tg_id, f"⚠️ Заявка {request.number} требует уточнения. Администратор свяжется с вами.")
+    await callback.message.edit_reply_markup(reply_markup=None); await callback.answer("Заявка отправлена на уточнение")
 
 
 @router.message(F.text.in_({"🛠 Админ-панель", "📋 Принять заявку", "⏳ Очередь", "📦 Грузоместа", "📸 Фотоотчёты", "📊 Сводка"}))
