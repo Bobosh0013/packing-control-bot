@@ -14,6 +14,8 @@ class Settings:
     admin_username: str
     database_url: str
     sheet_id: str
+    sheets_webhook_url: str
+    sheets_webhook_secret: str
     service_account_file: Path
     timezone: str
     app_name: str
@@ -39,6 +41,8 @@ def load_settings() -> Settings:
         admin_username=getenv("ADMIN_USERNAME", "").strip().lstrip("@"),
         database_url=getenv("DATABASE_URL", "sqlite+aiosqlite:///./packing_control.db"),
         sheet_id=getenv("SHEET_ID", "").strip(),
+        sheets_webhook_url=getenv("SHEETS_WEBHOOK_URL", "").strip(),
+        sheets_webhook_secret=getenv("SHEETS_WEBHOOK_SECRET", "").strip(),
         service_account_file=Path(
             getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "credentials/google-service-account.json")
         ),

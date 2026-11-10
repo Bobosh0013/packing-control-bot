@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 import gspread
+import aiohttp
 from google.oauth2.service_account import Credentials
 
 from bot.config import load_settings
@@ -22,6 +23,15 @@ def _worksheet():
 
 
 async def append_request(row: list[object]) -> bool:
+    if settings.sheets_webhook_url and not settings.sheets_webhook_url.startswith("PASTE_"):
+        try:
+            async with aiohttp.ClientSession() as client:
+                async with client.post(settings.sheets_webhook_url, json={"secret": settings.sheets_webhook_secret, "action": "append_request", "row": row}, timeout=20) as response:
+                    return response.status == 200
+        except Exception:
+            logger.exception("Не удалось отправить заявку через Apps Script")
+            return False
+
     def write() -> bool:
         worksheet = _worksheet()
         if worksheet is None:
