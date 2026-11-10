@@ -11,6 +11,7 @@ load_dotenv()
 class Settings:
     bot_token: str
     admin_ids: frozenset[int]
+    admin_username: str
     database_url: str
     sheet_id: str
     service_account_file: Path
@@ -35,6 +36,7 @@ def load_settings() -> Settings:
     return Settings(
         bot_token=token,
         admin_ids=admin_ids,
+        admin_username=getenv("ADMIN_USERNAME", "").strip().lstrip("@"),
         database_url=getenv("DATABASE_URL", "sqlite+aiosqlite:///./packing_control.db"),
         sheet_id=getenv("SHEET_ID", "").strip(),
         service_account_file=Path(
