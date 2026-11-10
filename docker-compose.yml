@@ -1,0 +1,25 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: packing_control
+      POSTGRES_USER: packing
+      POSTGRES_PASSWORD: packing_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - postgres
+    volumes:
+      - ./credentials:/app/credentials:ro
+      - ./storage:/app/storage
+
+volumes:
+  postgres_data:

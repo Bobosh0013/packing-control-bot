@@ -1,0 +1,12 @@
+aiogram>=3.13,<4
+SQLAlchemy>=2.0,<3
+greenlet>=3.1,<4
+asyncpg>=0.29,<1
+aiosqlite>=0.20,<1
+python-dotenv>=1.0,<2
+gspread>=6.1,<7
+google-auth>=2.35,<3
+alembic>=1.13,<2
+APScheduler>=3.10,<4
+aiofiles>=24,<25
+python-multipart>=0.0.9,<1
