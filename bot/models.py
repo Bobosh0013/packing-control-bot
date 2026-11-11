@@ -53,6 +53,8 @@ class AccessRequest(Base):
     tg_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
     fio: Mapped[str] = mapped_column(String(255))
     phone: Mapped[str] = mapped_column(String(64))
+    email: Mapped[str] = mapped_column(String(255), default="")
+    brands: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(32), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

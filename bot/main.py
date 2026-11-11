@@ -13,7 +13,7 @@ from decimal import Decimal
 
 from bot.config import load_settings
 from bot.db import get_session, init_database, session_factory
-from bot.menu import admin_menu, form_menu, partner_menu, regulation_menu
+from bot.menu import admin_menu, contact_menu, form_menu, partner_menu, regulation_menu
 from bot.models import AccessRequest, Partner, Request as DbRequest, RequestStatus, User
 from bot.sheets import append_request
 
@@ -33,7 +33,10 @@ class RequestForm(StatesGroup):
 
 
 class AccessForm(StatesGroup):
+    contact = State()
     fio = State()
+    email = State()
+    brands = State()
     phone = State()
 
 
@@ -61,6 +64,9 @@ async def show_regulation(message: Message) -> None:
 async def start(message: Message) -> None:
     if not message.from_user:
         return
+    if is_admin(message):
+        await message.answer("Добро пожаловать, администратор. Выберите действие.", reply_markup=admin_menu())
+        return
     if not is_admin(message):
         async with session_factory() as session:
             access = (await session.execute(select(AccessRequest).where(AccessRequest.tg_id == message.from_user.id))).scalar_one_or_none()
@@ -80,12 +86,20 @@ async def start(message: Message) -> None:
 async def stateless_access_request(message: Message) -> None:
     await message.answer(
         "<b>Доступ к производству</b>\n\nДо подачи заявок администратор должен подтвердить ваш доступ.\n"
-        "Нажмите /request_access и отправьте имя и номер телефона.", parse_mode="HTML"
+        "Нажмите /request_access и отправьте контакт, имя, email и бренд.", parse_mode="HTML"
     )
 
 
 @router.message(Command("request_access"))
 async def request_access_start(message: Message, state: FSMContext) -> None:
+    await state.set_state(AccessForm.contact)
+    await message.answer("Сначала отправьте свой контакт кнопкой ниже.", reply_markup=contact_menu())
+
+
+@router.message(AccessForm.contact, F.contact)
+async def access_contact(message: Message, state: FSMContext) -> None:
+    contact = message.contact
+    await state.update_data(phone=contact.phone_number, tg_id=contact.user_id or message.from_user.id)
     await state.set_state(AccessForm.fio)
     await message.answer("Введите ваше имя и фамилию или имя менеджера.", reply_markup=form_menu())
 
@@ -94,26 +108,46 @@ async def request_access_start(message: Message, state: FSMContext) -> None:
 async def access_fio(message: Message, state: FSMContext) -> None:
     if message.text in {"❌ Отмена", "⬅️ Назад"}:
         await state.clear(); await message.answer("Запрос отменён."); return
-    await state.update_data(fio=message.text.strip()); await state.set_state(AccessForm.phone)
-    await message.answer("Введите номер телефона для связи, например +7 900 000-00-00.", reply_markup=form_menu())
+    await state.update_data(fio=message.text.strip()); await state.set_state(AccessForm.email)
+    await message.answer("Введите рабочий email.", reply_markup=form_menu())
+
+
+@router.message(AccessForm.email)
+async def access_email(message: Message, state: FSMContext) -> None:
+    if message.text in {"❌ Отмена", "⬅️ Назад"}:
+        await state.set_state(AccessForm.fio); await message.answer("Введите имя.", reply_markup=form_menu()); return
+    if "@" not in message.text:
+        await message.answer("Введите корректный email, например manager@example.com.", reply_markup=form_menu()); return
+    await state.update_data(email=message.text.strip()); await state.set_state(AccessForm.brands)
+    await message.answer("Напишите ИП, ООО или бренд. Если брендов несколько, перечислите через запятую.", reply_markup=form_menu())
+
+
+@router.message(AccessForm.brands)
+async def access_brands(message: Message, state: FSMContext) -> None:
+    if message.text in {"❌ Отмена", "⬅️ Назад"}:
+        await state.set_state(AccessForm.email); await message.answer("Введите рабочий email.", reply_markup=form_menu()); return
+    await state.update_data(brands=message.text.strip()); await state.set_state(AccessForm.phone)
+    await message.answer("Проверьте данные и напишите «Отправить».", reply_markup=form_menu())
 
 
 @router.message(AccessForm.phone)
 async def access_phone(message: Message, state: FSMContext) -> None:
     if message.text in {"❌ Отмена", "⬅️ Назад"}:
         await state.clear(); await message.answer("Запрос отменён."); return
+    if message.text != "Отправить":
+        await message.answer("Напишите «Отправить» или нажмите «Отмена».", reply_markup=form_menu()); return
     data = await state.get_data()
     async with session_factory() as session:
         request = (await session.execute(select(AccessRequest).where(AccessRequest.tg_id == message.from_user.id))).scalar_one_or_none()
         if request is None:
-            request = AccessRequest(tg_id=message.from_user.id, fio=data["fio"], phone=message.text.strip(), status="pending")
+            request = AccessRequest(tg_id=message.from_user.id, fio=data["fio"], phone=data.get("phone", ""), email=data.get("email", ""), brands=data.get("brands", ""), status="pending")
             session.add(request)
         else:
-            request.fio, request.phone, request.status = data["fio"], message.text.strip(), "pending"
+            request.fio, request.phone, request.email, request.brands, request.status = data["fio"], data.get("phone", ""), data.get("email", ""), data.get("brands", ""), "pending"
         await session.commit()
     keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Открыть доступ", callback_data=f"access_approve:{message.from_user.id}"), InlineKeyboardButton(text="❌ Отклонить", callback_data=f"access_reject:{message.from_user.id}")]])
     for admin_id in settings.admin_ids:
-        await message.bot.send_message(admin_id, f"🔐 Запрос доступа\nИмя: {data['fio']}\nТелефон: {message.text.strip()}\nTelegram ID: {message.from_user.id}", reply_markup=keyboard)
+        await message.bot.send_message(admin_id, f"🔐 Запрос доступа\nИмя: {data['fio']}\nТелефон: {data.get('phone', '')}\nEmail: {data.get('email', '')}\nБренды: {data.get('brands', '')}\nTelegram ID: {message.from_user.id}", reply_markup=keyboard)
     await state.clear(); await message.answer("Запрос отправлен администратору. Дождитесь подтверждения.")
 
 

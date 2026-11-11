@@ -19,3 +19,6 @@ def form_menu() -> ReplyKeyboardMarkup:
 
 def regulation_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="✅ Ознакомлен, продолжить")]], resize_keyboard=True)
+
+def contact_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📱 Отправить мой контакт", request_contact=True)], [KeyboardButton(text="❌ Отмена")]], resize_keyboard=True)
