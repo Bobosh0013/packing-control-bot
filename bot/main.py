@@ -13,7 +13,7 @@ from decimal import Decimal
 
 from bot.config import load_settings
 from bot.db import get_session, init_database, session_factory
-from bot.menu import admin_menu, contact_menu, form_menu, partner_menu, regulation_menu
+from bot.menu import admin_menu, comment_menu, confirm_menu, contact_menu, form_menu, marketplace_menu, partner_menu, regulation_menu, weight_menu
 from bot.models import AccessRequest, Partner, Request as DbRequest, RequestStatus, User
 from bot.sheets import append_request
 
@@ -46,12 +46,13 @@ def is_admin(message: Message) -> bool:
 
 async def show_regulation(message: Message) -> None:
     await message.answer(
-        f"<b>Регламент работы с «{settings.app_name}»</b>\n\n"
-        "Одна заявка — один товар, одна фасовка и один маркетплейс.\n\n"
+        "<b>Регламент работы производства по фасовке товаров</b>\n\n"
+        "Одна заявка — один товар, одна фасовка и один маркетплейс.\n"
+        "Пример: миндаль, фасовка 500 г, Ozon — это одна заявка. Другой вес или другой маркетплейс оформляется отдельно.\n\n"
         "• В одном коробе максимум 23 кг товара.\n"
-        "• В одном кластере максимум 30 грузомест.\n"
+        "• В одном кластере максимум 30 грузомест. Если мест больше 30, оформляется отдельная заявка.\n"
         "• Штрихкод и состав отправляются до передачи заявки в работу.\n"
-        "• Фактический вес фиксируется после фасовки.\n"
+        "• Фактический вес поставки фиксируется после фасовки.\n"
         "• Недовес или перевес сохраняется в истории и отправляется партнёру.\n"
         "• Спор открывается через кнопку помощи с номером заявки и причиной.\n"
         "• Фото приёмки, фасовки и готовых коробок сохраняются к заявке.\n\n"
@@ -204,7 +205,7 @@ async def status_command(message: Message) -> None:
 @router.message(F.text == "📋 Подать заявку")
 async def request_start(message: Message, state: FSMContext) -> None:
     await state.set_state(RequestForm.product)
-    await message.answer("Введите название товара или нажмите «Отмена».", reply_markup=form_menu())
+    await message.answer("Введите название товара. Для нового товара напишите название от руки.", reply_markup=form_menu())
 
 
 @router.message(RequestForm.product)
@@ -212,7 +213,7 @@ async def request_product(message: Message, state: FSMContext) -> None:
     if message.text in {"❌ Отмена", "⬅️ Назад"}:
         await state.clear(); await message.answer("Заявка отменена.", reply_markup=admin_menu() if is_admin(message) else partner_menu()); return
     await state.update_data(product=message.text.strip()); await state.set_state(RequestForm.marketplace)
-    await message.answer("Укажите маркетплейс: Ozon, WB или Яндекс Маркет.", reply_markup=form_menu())
+    await message.answer("Выберите маркетплейс.", reply_markup=marketplace_menu())
 
 
 @router.message(RequestForm.marketplace)
@@ -221,8 +222,10 @@ async def request_marketplace(message: Message, state: FSMContext) -> None:
         await state.set_state(RequestForm.product); await message.answer("Введите название товара.", reply_markup=form_menu()); return
     if message.text == "❌ Отмена":
         await state.clear(); await message.answer("Заявка отменена.", reply_markup=partner_menu()); return
+    if message.text not in {"Ozon", "WB", "Яндекс Маркет"}:
+        await message.answer("Выберите маркетплейс кнопкой.", reply_markup=marketplace_menu()); return
     await state.update_data(marketplace=message.text.strip()); await state.set_state(RequestForm.weight)
-    await message.answer("Введите вес одной упаковки в граммах: например 250, 300, 500 или 1000.", reply_markup=form_menu())
+    await message.answer("Выберите вес одной упаковки.", reply_markup=weight_menu())
 
 
 @router.message(RequestForm.weight)
@@ -231,13 +234,15 @@ async def request_weight(message: Message, state: FSMContext) -> None:
         await state.set_state(RequestForm.marketplace); await message.answer("Укажите маркетплейс.", reply_markup=form_menu()); return
     if message.text == "❌ Отмена":
         await state.clear(); await message.answer("Заявка отменена.", reply_markup=partner_menu()); return
+    if message.text == "Свой вариант":
+        await message.answer("Введите вес целым числом от 50 до 5000 граммов.", reply_markup=form_menu()); return
     try:
-        weight = int(message.text.strip())
+        weight = int(message.text.replace("г", "").strip())
         if not 50 <= weight <= 5000: raise ValueError
     except ValueError:
         await message.answer("Введите целое число от 50 до 5000 граммов.", reply_markup=form_menu()); return
     await state.update_data(weight=weight); await state.set_state(RequestForm.units)
-    await message.answer("Введите количество упаковок.", reply_markup=form_menu())
+    await message.answer("✍️ Введите количество упаковок (напишите число от руки):", reply_markup=form_menu())
 
 
 @router.message(RequestForm.units)
@@ -252,7 +257,7 @@ async def request_units(message: Message, state: FSMContext) -> None:
     except ValueError:
         await message.answer("Введите целое количество больше нуля.", reply_markup=form_menu()); return
     data = await state.update_data(units=units); await state.set_state(RequestForm.comment)
-    await message.answer(f"Плановый вес: <b>{units * data.get('weight', 0) / 1000:.2f} кг</b>. Введите комментарий или напишите «нет».", parse_mode="HTML", reply_markup=form_menu())
+    await message.answer(f"Плановый вес: <b>{units * data.get('weight', 0) / 1000:.2f} кг</b>. Если есть примечание — напишите его.", parse_mode="HTML", reply_markup=comment_menu())
 
 
 @router.message(RequestForm.comment)
@@ -261,11 +266,16 @@ async def request_comment(message: Message, state: FSMContext) -> None:
         await state.set_state(RequestForm.units); await message.answer("Введите количество упаковок.", reply_markup=form_menu()); return
     if message.text == "❌ Отмена":
         await state.clear(); await message.answer("Заявка отменена.", reply_markup=partner_menu()); return
-    await state.update_data(comment=None if message.text.lower() == "нет" else message.text.strip())
+    await state.update_data(comment=None if message.text == "⏭ Пропустить" else message.text.strip())
     data = await state.get_data(); total = data["units"] * data["weight"] / 1000; await state.set_state(RequestForm.confirm)
+    async with session_factory() as session:
+        profile = (await session.execute(select(AccessRequest).where(AccessRequest.tg_id == message.from_user.id))).scalar_one_or_none()
+    role = profile.email if profile else "Менеджер"
+    brands = profile.brands if profile else "Не указано"
+    await state.update_data(role=role, brands=brands)
     await message.answer(
-        f"<b>Предпросмотр заявки</b>\n\nТовар: {data['product']}\nМаркетплейс: {data['marketplace']}\nФасовка: {data['weight']} г\nКоличество: {data['units']} шт.\nПлан: {total:.2f} кг\n\nДля подтверждения напишите «Подтвердить» или нажмите «Отмена».",
-        parse_mode="HTML", reply_markup=form_menu()
+        f"<b>Предпросмотр заявки</b>\n\nКто подаёт: {message.from_user.full_name} — {role}\nИП/ООО/бренд: {brands}\nТовар: {data['product']}\nМаркетплейс: {data['marketplace']}\nФасовка: {data['weight']} г\nКоличество: {data['units']} шт.\nПлан: {total:.2f} кг\n\nПроверьте данные и нажмите кнопку подтверждения.",
+        parse_mode="HTML", reply_markup=confirm_menu()
     )
 
 
@@ -273,8 +283,8 @@ async def request_comment(message: Message, state: FSMContext) -> None:
 async def request_confirm(message: Message, state: FSMContext) -> None:
     if message.text == "❌ Отмена":
         await state.clear(); await message.answer("Заявка отменена.", reply_markup=partner_menu()); return
-    if message.text != "Подтвердить":
-        await message.answer("Напишите «Подтвердить» или нажмите «Отмена».", reply_markup=form_menu()); return
+    if message.text != "✅ Утверждено / Подтвердить":
+        await message.answer("Нажмите кнопку «✅ Утверждено / Подтвердить».", reply_markup=confirm_menu()); return
     data = await state.get_data()
     async with session_factory() as session:
         user = (await session.execute(select(User).where(User.tg_id == message.from_user.id))).scalar_one_or_none()
@@ -289,23 +299,19 @@ async def request_confirm(message: Message, state: FSMContext) -> None:
         request = DbRequest(
             number="TEMP", partner_id=partner.id, created_by_user_id=user.id,
             product_name=data["product"], weight_category_g=data["weight"], units_count=data["units"],
-            total_kg=total, marketplace=data["marketplace"], status=RequestStatus.DRAFT,
+            total_kg=total, marketplace=data["marketplace"], status=RequestStatus.IN_QUEUE,
             comment=data.get("comment"),
         )
         session.add(request); await session.flush(); request.number = f"З-{request.id:04d}"; await session.commit()
         row = [request.number, datetime.now().isoformat(timespec="minutes"), partner.name, partner.id, message.from_user.full_name,
                data["marketplace"], data["product"], "", data["weight"], data["units"], float(total), "", "", "", "", "", "", "", "На согласовании", "Нет", "Нет", "Нет", "Нет", "", data.get("comment") or "", datetime.now().isoformat(timespec="minutes"), "", "", "", "", "Новая заявка", message.from_user.full_name]
         await append_request(row)
-        admin_keyboard = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Принять в очередь", callback_data=f"approve:{request.id}"),
-            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject:{request.id}"),
-        ]])
         for admin_id in settings.admin_ids:
             try:
-                await message.bot.send_message(admin_id, f"📋 Новая заявка {request.number}\nТовар: {request.product_name}\nФасовка: {request.weight_category_g} г\nКоличество: {request.units_count} шт.\nПлан: {request.total_kg} кг\nМаркетплейс: {request.marketplace}", reply_markup=admin_keyboard)
+                await message.bot.send_message(admin_id, f"📋 Новая заявка {request.number}\nИП/бренд: {data.get('brands', 'Не указано')}\nМенеджер: {message.from_user.full_name} ({data.get('role', 'Менеджер')})\nТовар: {request.product_name}\nФасовка: {request.weight_category_g} г\nКоличество: {request.units_count} шт.\nПлан: {request.total_kg} кг\nМаркетплейс: {request.marketplace}")
             except Exception:
                 logging.exception("Не удалось уведомить администратора")
-    await state.clear(); await message.answer(f"✅ Заявка {request.number} отправлена администратору на подтверждение.", reply_markup=partner_menu())
+    await state.clear(); await message.answer(f"✅ Заявка {request.number} автоматически принята в очередь.", reply_markup=partner_menu())
 
 
 @router.callback_query(F.data.startswith("approve:"))

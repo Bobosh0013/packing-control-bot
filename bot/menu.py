@@ -17,6 +17,33 @@ def admin_menu() -> ReplyKeyboardMarkup:
 def form_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Назад"), KeyboardButton(text="❌ Отмена")]], resize_keyboard=True)
 
+def marketplace_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="Ozon"), KeyboardButton(text="WB")],
+        [KeyboardButton(text="Яндекс Маркет")],
+        [KeyboardButton(text="⬅️ Назад"), KeyboardButton(text="❌ Отмена")],
+    ], resize_keyboard=True)
+
+def weight_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="250 г"), KeyboardButton(text="300 г")],
+        [KeyboardButton(text="500 г"), KeyboardButton(text="1000 г")],
+        [KeyboardButton(text="Свой вариант")],
+        [KeyboardButton(text="⬅️ Назад"), KeyboardButton(text="❌ Отмена")],
+    ], resize_keyboard=True)
+
+def comment_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="⏭ Пропустить")],
+        [KeyboardButton(text="⬅️ Назад"), KeyboardButton(text="❌ Отмена")],
+    ], resize_keyboard=True)
+
+def confirm_menu() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(keyboard=[
+        [KeyboardButton(text="✅ Утверждено / Подтвердить")],
+        [KeyboardButton(text="⬅️ Назад"), KeyboardButton(text="❌ Отмена")],
+    ], resize_keyboard=True)
+
 def regulation_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="✅ Ознакомлен, продолжить")]], resize_keyboard=True)
 
