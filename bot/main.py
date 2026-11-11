@@ -14,7 +14,7 @@ from decimal import Decimal
 from bot.config import load_settings
 from bot.db import get_session, init_database, session_factory
 from bot.menu import admin_menu, form_menu, partner_menu, regulation_menu
-from bot.models import Partner, Request as DbRequest, RequestStatus, User
+from bot.models import AccessRequest, Partner, Request as DbRequest, RequestStatus, User
 from bot.sheets import append_request
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -30,6 +30,11 @@ class RequestForm(StatesGroup):
     units = State()
     comment = State()
     confirm = State()
+
+
+class AccessForm(StatesGroup):
+    fio = State()
+    phone = State()
 
 
 def is_admin(message: Message) -> bool:
@@ -56,6 +61,13 @@ async def show_regulation(message: Message) -> None:
 async def start(message: Message) -> None:
     if not message.from_user:
         return
+    if not is_admin(message):
+        async with session_factory() as session:
+            access = (await session.execute(select(AccessRequest).where(AccessRequest.tg_id == message.from_user.id))).scalar_one_or_none()
+            user = (await session.execute(select(User).where(User.tg_id == message.from_user.id))).scalar_one_or_none()
+        if not access or access.status != "approved" or not user or not user.is_active:
+            await stateless_access_request(message)
+            return
     if message.from_user.id not in accepted_users:
         await message.answer(
             f"Добро пожаловать в «{settings.app_name}»!\n\nПеред началом работы ознакомьтесь с регламентом.",
@@ -63,6 +75,73 @@ async def start(message: Message) -> None:
         await show_regulation(message)
         return
     await message.answer("Выберите действие.", reply_markup=admin_menu() if is_admin(message) else partner_menu())
+
+
+async def stateless_access_request(message: Message) -> None:
+    await message.answer(
+        "<b>Доступ к производству</b>\n\nДо подачи заявок администратор должен подтвердить ваш доступ.\n"
+        "Нажмите /request_access и отправьте имя и номер телефона.", parse_mode="HTML"
+    )
+
+
+@router.message(Command("request_access"))
+async def request_access_start(message: Message, state: FSMContext) -> None:
+    await state.set_state(AccessForm.fio)
+    await message.answer("Введите ваше имя и фамилию или имя менеджера.", reply_markup=form_menu())
+
+
+@router.message(AccessForm.fio)
+async def access_fio(message: Message, state: FSMContext) -> None:
+    if message.text in {"❌ Отмена", "⬅️ Назад"}:
+        await state.clear(); await message.answer("Запрос отменён."); return
+    await state.update_data(fio=message.text.strip()); await state.set_state(AccessForm.phone)
+    await message.answer("Введите номер телефона для связи, например +7 900 000-00-00.", reply_markup=form_menu())
+
+
+@router.message(AccessForm.phone)
+async def access_phone(message: Message, state: FSMContext) -> None:
+    if message.text in {"❌ Отмена", "⬅️ Назад"}:
+        await state.clear(); await message.answer("Запрос отменён."); return
+    data = await state.get_data()
+    async with session_factory() as session:
+        request = (await session.execute(select(AccessRequest).where(AccessRequest.tg_id == message.from_user.id))).scalar_one_or_none()
+        if request is None:
+            request = AccessRequest(tg_id=message.from_user.id, fio=data["fio"], phone=message.text.strip(), status="pending")
+            session.add(request)
+        else:
+            request.fio, request.phone, request.status = data["fio"], message.text.strip(), "pending"
+        await session.commit()
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Открыть доступ", callback_data=f"access_approve:{message.from_user.id}"), InlineKeyboardButton(text="❌ Отклонить", callback_data=f"access_reject:{message.from_user.id}")]])
+    for admin_id in settings.admin_ids:
+        await message.bot.send_message(admin_id, f"🔐 Запрос доступа\nИмя: {data['fio']}\nТелефон: {message.text.strip()}\nTelegram ID: {message.from_user.id}", reply_markup=keyboard)
+    await state.clear(); await message.answer("Запрос отправлен администратору. Дождитесь подтверждения.")
+
+
+@router.callback_query(F.data.startswith("access_approve:"))
+async def access_approve(callback: CallbackQuery) -> None:
+    if not callback.from_user or callback.from_user.id not in settings.admin_ids: await callback.answer("Недостаточно прав", show_alert=True); return
+    tg_id = int(callback.data.split(":", 1)[1])
+    async with session_factory() as session:
+        request = (await session.execute(select(AccessRequest).where(AccessRequest.tg_id == tg_id))).scalar_one_or_none()
+        user = (await session.execute(select(User).where(User.tg_id == tg_id))).scalar_one_or_none()
+        if request is None: await callback.answer("Запрос не найден", show_alert=True); return
+        request.status = "approved"
+        if user is None: user = User(tg_id=tg_id, role="partner_manager", fio=request.fio, phone=request.phone, is_active=True); session.add(user)
+        else: user.is_active = True; user.fio, user.phone = request.fio, request.phone
+        await session.commit()
+    await callback.bot.send_message(tg_id, "✅ Доступ открыт. Добро пожаловать в производство фасовки товаров!\n\nПеред началом работы ознакомьтесь с регламентом: отправьте /start.")
+    await callback.message.edit_reply_markup(reply_markup=None); await callback.answer("Доступ открыт")
+
+
+@router.callback_query(F.data.startswith("access_reject:"))
+async def access_reject(callback: CallbackQuery) -> None:
+    if not callback.from_user or callback.from_user.id not in settings.admin_ids: await callback.answer("Недостаточно прав", show_alert=True); return
+    tg_id = int(callback.data.split(":", 1)[1])
+    async with session_factory() as session:
+        request = (await session.execute(select(AccessRequest).where(AccessRequest.tg_id == tg_id))).scalar_one_or_none()
+        if request: request.status = "rejected"; await session.commit()
+    await callback.bot.send_message(tg_id, "⚠️ Доступ пока не подтверждён. Обратитесь к администратору.")
+    await callback.message.edit_reply_markup(reply_markup=None); await callback.answer("Запрос отклонён")
 
 
 @router.message(F.text == "✅ Ознакомлен, продолжить")
